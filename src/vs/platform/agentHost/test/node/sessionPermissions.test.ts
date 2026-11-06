@@ -217,6 +217,26 @@ suite('SessionPermissionManager', () => {
 			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item -LiteralPath "${namedSource}"`), sessionUri), undefined);
 		});
 
+		test('requires trusted file-edit provenance even when a tool reports an apparent creation', async () => {
+			const filePath = join(workDir, 'agent-temp-untracked.tmp');
+			writeFileSync(filePath, 'untracked contents');
+			const fileUri = URI.file(filePath).toString();
+			permissions.recordCompletedFileEdits(sessionUri, 'unverified-call', {
+				success: true,
+				pastTenseMessage: 'Created temporary file',
+				content: [{ type: ToolResultContentType.FileEdit, after: { uri: fileUri, content: { uri: fileUri } } }],
+			});
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+
+		test('keeps protected workspace paths subject to confirmation', async () => {
+			const protectedDirectory = join(workDir, '.git');
+			mkdirSync(protectedDirectory);
+			const filePath = join(protectedDirectory, 'copilot-temp.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+
 		test('requires confirmation when an agent-owned file has subsequently changed', async () => {
 			const filePath = join(workDir, 'agent-temp-file.tmp');
 			await recordAgentCreatedTemporaryFile(filePath);
