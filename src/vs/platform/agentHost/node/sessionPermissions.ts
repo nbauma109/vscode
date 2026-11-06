@@ -86,6 +86,7 @@ interface ITrackedTemporaryFile {
 }
 
 const MAX_TEMPORARY_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_TRACKED_TEMPORARY_FILES = 128;
 
 function temporaryFileKey(filePath: string): string {
 	const normalized = path.normalize(filePath);
@@ -398,6 +399,12 @@ export class SessionPermissionManager extends Disposable {
 				}
 				const key = temporaryFileKey(after.fsPath);
 				const previous = tracked.get(key);
+				if (!previous && tracked.size >= MAX_TRACKED_TEMPORARY_FILES) {
+					const oldest = tracked.keys().next().value;
+					if (oldest) {
+						tracked.delete(oldest);
+					}
+				}
 				tracked.set(key, this._captureTrackedTemporaryFile(storageResource, toolCallId, after.fsPath, previous));
 			} catch (error) {
 				this._logService.trace('[SessionPermissionManager] Unable to track a temporary file edit', error);
