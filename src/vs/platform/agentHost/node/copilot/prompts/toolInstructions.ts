@@ -67,6 +67,10 @@ export const COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS = [
 ].join('\n');
 const subagentToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS;
 
+/** Steers temporary-file creation and cleanup toward tracked operations without bypassing permission checks. */
+export const COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION = 'Avoid unnecessary temporary files in the workspace; prefer pipelines or direct tool operations. When a temporary file is needed, prefer a file-editing tool that lets the host record its creation. Clean up only temporary files created in the current task: prefer a file-editing tool that supports deletion, or use a single-file deletion command with an absolute literal path when necessary. Never bypass required approvals, and do not delete pre-existing or user-modified files without permission.';
+const temporaryFileCleanupToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION;
+
 /**
  * Front-end guidance for the integrated browser tools, ported from the Copilot
  * extension's `defaultAgentInstructions`/per-model prompts. Emitted only when the
@@ -87,7 +91,7 @@ const browserToolInstructions: ToolInstructionLine = ({ hasTool }) => {
 /**
  * The registered tool-instruction lines, in render order.
  */
-const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, browserToolInstructions];
+const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, temporaryFileCleanupToolInstructions, browserToolInstructions];
 
 /** Tool-search guidance mirrored from the Copilot extension prompt. */
 const toolSearchToolInstructions: ToolInstructionLine = ({ hasTool }) =>
