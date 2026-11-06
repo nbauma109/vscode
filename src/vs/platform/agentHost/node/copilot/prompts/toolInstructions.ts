@@ -67,6 +67,10 @@ export const COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS = [
 ].join('\n');
 const subagentToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS;
 
+/** Keeps disposable workspace file cleanup within the normal file-edit permission checks. */
+export const COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION = 'Avoid creating temporary files in the workspace when a pipeline or direct tool operation suffices. To clean up a temporary file created during the current task, prefer an available file-editing tool that supports deletion (such as `apply_patch`) over shell commands like `rm` or `Remove-Item`. Never bypass required approvals or delete pre-existing or user-modified files without permission.';
+const temporaryFileCleanupToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION;
+
 /**
  * Front-end guidance for the integrated browser tools, ported from the Copilot
  * extension's `defaultAgentInstructions`/per-model prompts. Emitted only when the
@@ -87,7 +91,7 @@ const browserToolInstructions: ToolInstructionLine = ({ hasTool }) => {
 /**
  * The registered tool-instruction lines, in render order.
  */
-const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, browserToolInstructions];
+const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, temporaryFileCleanupToolInstructions, browserToolInstructions];
 
 /** Tool-search guidance mirrored from the Copilot extension prompt. */
 const toolSearchToolInstructions: ToolInstructionLine = ({ hasTool }) =>
