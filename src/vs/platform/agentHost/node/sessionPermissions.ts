@@ -95,40 +95,41 @@ function isTemporaryArtifact(filePath: string): boolean {
 	return /(?:^|[._-])(?:tmp|temp|temporary|scratch|copilot)(?:[._-]|$)|\.(?:tmp|temp)$/i.test(path.basename(filePath));
 }
 
-/**
- * Only standalone deletion commands with a literal file operand qualify.
- * Shell expressions, wildcards, recursive deletion, and multiple operands remain subject to confirmation.
- */
-function tokenizeTemporaryCleanupCommand(commandLine: string): string[] | undefined {
+interface ILiteralCleanupToken {
+	readonly value: string;
+	readonly quoted: boolean;
+}
+
+function tokenizeTemporaryCleanupCommand(commandLine: string): ILiteralCleanupToken[] | undefined {
 	if (/[\r\n\0]/.test(commandLine)) {
 		return undefined;
 	}
-	const tokens: string[] = [];
+	const tokens: ILiteralCleanupToken[] = [];
 	let remaining = commandLine.trim();
 	while (remaining.length > 0) {
 		const match = /^(?:'([A-Za-z0-9_.:\/\\ -]+)'|"([A-Za-z0-9_.:\/\\ -]+)"|([A-Za-z0-9_.:\/\\-]+))(?=\s|$)/.exec(remaining);
 		if (!match) {
 			return undefined;
 		}
-		tokens.push(match[1] ?? match[2] ?? match[3]);
+		tokens.push({ value: match[1] ?? match[2] ?? match[3], quoted: match[3] === undefined });
 		remaining = remaining.slice(match[0].length).trimStart();
 	}
 	return tokens.length >= 2 && tokens.length <= 5 ? tokens : undefined;
 }
 
-function powerShellCleanupOperand(tokens: readonly string[]): string | undefined {
+function powerShellCleanupOperand(tokens: readonly ILiteralCleanupToken[]): string | undefined {
 	let target: string | undefined;
 	let force = false;
 	let pathOption = false;
 	for (let index = 1; index < tokens.length; index++) {
 		const token = tokens[index];
-		if (/^-Force$/i.test(token) && !force) {
+		if (!token.quoted && /^-Force$/i.test(token.value) && !force) {
 			force = true;
-		} else if (/^-(?:LiteralPath|Path)$/i.test(token) && !pathOption && !target && index + 1 < tokens.length) {
+		} else if (!token.quoted && /^-(?:LiteralPath|Path)$/i.test(token.value) && !pathOption && !target && index + 1 < tokens.length) {
 			pathOption = true;
-			target = tokens[++index];
-		} else if (!target && !token.startsWith('-')) {
-			target = token;
+			target = tokens[++index].value;
+		} else if (!target && !token.value.startsWith('-')) {
+			target = token.value;
 		} else {
 			return undefined;
 		}
@@ -136,18 +137,18 @@ function powerShellCleanupOperand(tokens: readonly string[]): string | undefined
 	return target && !target.startsWith('-') ? target : undefined;
 }
 
-function bashCleanupOperand(tokens: readonly string[]): string | undefined {
+function bashCleanupOperand(tokens: readonly ILiteralCleanupToken[]): string | undefined {
 	let target: string | undefined;
 	let force = false;
 	let endOfOptions = false;
 	for (let index = 1; index < tokens.length; index++) {
 		const token = tokens[index];
-		if (token === '-f' && !force && !endOfOptions) {
+		if (!token.quoted && token.value === '-f' && !force && !endOfOptions) {
 			force = true;
-		} else if (token === '--' && !endOfOptions && !target) {
+		} else if (!token.quoted && token.value === '--' && !endOfOptions && !target) {
 			endOfOptions = true;
-		} else if (!target && !token.startsWith('-')) {
-			target = token;
+		} else if (!target && !token.value.startsWith('-')) {
+			target = token.value;
 		} else {
 			return undefined;
 		}
@@ -164,10 +165,13 @@ function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolAppr
 	if (!tokens) {
 		return undefined;
 	}
-	if (shellLanguage === 'powershell' && tokens[0].toLowerCase() === 'remove-item') {
+	if (tokens[0].quoted) {
+		return undefined;
+	}
+	if (shellLanguage === 'powershell' && tokens[0].value.toLowerCase() === 'remove-item') {
 		return powerShellCleanupOperand(tokens);
 	}
-	if (shellLanguage === 'bash' && tokens[0] === 'rm') {
+	if (shellLanguage === 'bash' && tokens[0].value === 'rm') {
 		return bashCleanupOperand(tokens);
 	}
 	return undefined;
