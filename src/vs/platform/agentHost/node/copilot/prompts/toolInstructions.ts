@@ -67,8 +67,8 @@ export const COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS = [
 ].join('\n');
 const subagentToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS;
 
-/** Steers temporary-file creation and cleanup toward tracked operations without bypassing permission checks. */
-export const COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION = 'Avoid unnecessary temporary files in the workspace; prefer pipelines or direct tool operations. When a temporary file is needed, prefer a file-editing tool that lets the host record its creation. Clean up only temporary files created in the current task: prefer a file-editing tool that supports deletion, or use a single-file deletion command with an absolute literal path when necessary. Never bypass required approvals, and do not delete pre-existing or user-modified files without permission.';
+/** Guides cleanup of agent-created temporary artifacts without limiting their creation or bypassing approvals. */
+export const COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION = 'Use temporary probe scripts (including PowerShell `.ps1` files) and other disposable files whenever they help complete the task. Once they are no longer needed, clean up only artifacts created during the current task. Prefer a file-editing tool that supports deletion, or use a single-file removal command with an absolute literal path when necessary. Honor required approvals; never delete pre-existing or user-modified files without permission.';
 const temporaryFileCleanupToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION;
 
 /**
