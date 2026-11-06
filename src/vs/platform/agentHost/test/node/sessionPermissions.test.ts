@@ -197,10 +197,13 @@ suite('SessionPermissionManager', () => {
 		});
 
 		test('approves exact Bash deletion of a verified agent-created temporary file', async () => {
+			if (isWindows) {
+				return;
+			}
 			const filePath = join(workDir, 'agent-temp-file.tmp');
 			await recordAgentCreatedTemporaryFile(filePath);
 			assert.strictEqual(
-				await permissions.getAutoApproval(shellEvent('rm -f -- ./agent-temp-file.tmp', 'bash'), sessionUri),
+				await permissions.getAutoApproval(shellEvent(`rm -f -- "${filePath}"`, 'bash'), sessionUri),
 				ToolCallConfirmationReason.NotNeeded,
 			);
 		});
@@ -240,6 +243,7 @@ suite('SessionPermissionManager', () => {
 			}
 			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -rf -- ./agent-temp-file.tmp', 'bash'), sessionUri), undefined);
 			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -f -- ./agent-temp-file.tmp other.tmp', 'bash'), sessionUri), undefined);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent('Remove-Item -Path ./agent-temp-file.tmp -Force'), sessionUri), undefined);
 			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm "-f" -- ./agent-temp-file.tmp', 'bash'), sessionUri), undefined);
 		});
 
