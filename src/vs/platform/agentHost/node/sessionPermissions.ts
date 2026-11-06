@@ -466,10 +466,10 @@ export class SessionPermissionManager extends Disposable {
 	): Promise<boolean> {
 		const operand = parseTemporaryFileRemoval(commandLine, shellLanguage);
 		const session = this._resolveSession(sessionKey);
-		if (!operand || !session || !workingDirectories?.length) {
+		if (!operand || !path.isAbsolute(operand) || !session || !workingDirectories?.length) {
 			return false;
 		}
-		const fullPath = path.isAbsolute(operand) ? path.normalize(operand) : path.resolve(workingDirectories[0].fsPath, operand);
+		const fullPath = path.normalize(operand);
 		const tracked = await this._trackedTemporaryFiles.get(session)?.get(temporaryFileKey(fullPath));
 		if (!tracked || !isTemporaryArtifact(fullPath)) {
 			return false;
