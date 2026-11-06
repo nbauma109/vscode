@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import type { SectionOverride } from '@github/copilot-sdk';
-import { COPILOT_AGENT_HOST_LARGE_OUTPUT_TOOL_INSTRUCTION, COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS, resolveToolInstructionsOverride, toolSearchInstructionLines, universalToolInstructions, type IToolInstructionContext } from '../../node/copilot/prompts/toolInstructions.js';
+import { COPILOT_AGENT_HOST_LARGE_OUTPUT_TOOL_INSTRUCTION, COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS, COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION, resolveToolInstructionsOverride, toolSearchInstructionLines, universalToolInstructions, type IToolInstructionContext } from '../../node/copilot/prompts/toolInstructions.js';
 import type { SchemaValues } from '../../common/agentHostSchema.js';
 import { copilotCliConfigSchema } from '../../common/copilotCliConfig.js';
 import { CLIENT_TOOL_SEARCH_REFERENCE_NAME } from '../../common/toolSearchConstants.js';
@@ -35,7 +35,7 @@ suite('toolInstructions', () => {
 	ensureNoDisposablesAreLeakedInTestSuite();
 
 	const LARGE_OUTPUT_LINE = COPILOT_AGENT_HOST_LARGE_OUTPUT_TOOL_INSTRUCTION;
-	const UNCONDITIONAL_TOOL_INSTRUCTIONS = `${LARGE_OUTPUT_LINE}\n${COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS}`;
+	const UNCONDITIONAL_TOOL_INSTRUCTIONS = `${LARGE_OUTPUT_LINE}\n${COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS}\n${COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION}`;
 
 	suite('universalToolInstructions', () => {
 		test('joins applicable lines in order and drops gated-out ones', () => {
@@ -50,12 +50,20 @@ suite('toolInstructions', () => {
 			assert.deepStrictEqual([
 				COPILOT_AGENT_HOST_LARGE_OUTPUT_TOOL_INSTRUCTION,
 				COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS,
+				COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION,
 				universalToolInstructions(hasTools()),
 			], [
 				'When a tool reports that its output was saved to a temporary file because it was too large, inspect that file with targeted, bounded reads: search it for what you need with the `grep` or `rg` tool, then use `view` with a narrow `view_range` to read the relevant lines. Do not dump the whole file (for example with `cat` or `view` without a range) or run broad searches, because oversized output will be offloaded again.',
 				'When launching subagents with the task tool, leave the `model`, `reasoning_effort`, and `context_tier` parameters unset — each agent type already runs on a model suited to it, and overriding the model changes the session\'s cost and behavior profile.\nOnly set the task tool\'s `model` parameter when the user explicitly names the model the subagent should run on.',
+				'Avoid unnecessary temporary files in the workspace; prefer pipelines or direct tool operations. When a temporary file is needed, prefer a file-editing tool that lets the host record its creation. Clean up only temporary files created in the current task: prefer a file-editing tool that supports deletion, or use a single-file deletion command with an absolute literal path when necessary. Never bypass required approvals, and do not delete pre-existing or user-modified files without permission.',
 				UNCONDITIONAL_TOOL_INSTRUCTIONS,
 			]);
+		});
+
+		test('guides temporary-file cleanup without relaxing required approvals', () => {
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('file-editing tool that lets the host record its creation'));
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('single-file deletion command with an absolute literal path'));
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('Never bypass required approvals'));
 		});
 
 		test('adds the registered browser line only when openBrowserPage + an agentic browser tool are present', () => {
