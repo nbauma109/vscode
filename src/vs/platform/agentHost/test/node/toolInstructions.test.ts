@@ -55,15 +55,15 @@ suite('toolInstructions', () => {
 			], [
 				'When a tool reports that its output was saved to a temporary file because it was too large, inspect that file with targeted, bounded reads: search it for what you need with the `grep` or `rg` tool, then use `view` with a narrow `view_range` to read the relevant lines. Do not dump the whole file (for example with `cat` or `view` without a range) or run broad searches, because oversized output will be offloaded again.',
 				'When launching subagents with the task tool, leave the `model`, `reasoning_effort`, and `context_tier` parameters unset — each agent type already runs on a model suited to it, and overriding the model changes the session\'s cost and behavior profile.\nOnly set the task tool\'s `model` parameter when the user explicitly names the model the subagent should run on.',
-				'Avoid unnecessary temporary files in the workspace; prefer pipelines or direct tool operations. When a temporary file is needed, prefer a file-editing tool that lets the host record its creation. Clean up only temporary files created in the current task: prefer a file-editing tool that supports deletion, or use a single-file deletion command with an absolute literal path when necessary. Never bypass required approvals, and do not delete pre-existing or user-modified files without permission.',
+				'Use temporary probe scripts (including PowerShell `.ps1` files) and other disposable files whenever they help complete the task. Once they are no longer needed, clean up only artifacts created during the current task. Prefer a file-editing tool that supports deletion, or use a single-file removal command with an absolute literal path when necessary. Honor required approvals; never delete pre-existing or user-modified files without permission.',
 				UNCONDITIONAL_TOOL_INSTRUCTIONS,
 			]);
 		});
 
-		test('guides temporary-file cleanup without relaxing required approvals', () => {
-			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('file-editing tool that lets the host record its creation'));
-			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('single-file deletion command with an absolute literal path'));
-			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('Never bypass required approvals'));
+		test('supports temporary probe creation while requiring safe cleanup', () => {
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('temporary probe scripts (including PowerShell `.ps1` files)'));
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('single-file removal command with an absolute literal path'));
+			assert.ok(COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION.includes('Honor required approvals'));
 		});
 
 		test('adds the registered browser line only when openBrowserPage + an agentic browser tool are present', () => {
