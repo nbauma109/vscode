@@ -469,37 +469,41 @@ export class SessionPermissionManager extends Disposable {
 		workingDirectories: readonly URI[] | undefined,
 		sessionKey: ProtocolURI,
 	): Promise<boolean> {
-		const operand = parseTemporaryFileRemoval(commandLine, shellLanguage);
-		const session = this._resolveSession(sessionKey);
-		if (!operand || !path.isAbsolute(operand) || !session || !workingDirectories?.length) {
-			return false;
-		}
-		const fullPath = path.normalize(operand);
-		const tracked = await this._trackedTemporaryFiles.get(session)?.get(temporaryFileKey(fullPath));
-		if (!tracked || !isTemporaryArtifact(fullPath)) {
-			return false;
-		}
-		const resource = URI.file(fullPath);
-		const resources = await this._resolveResourcesForApproval(resource);
-		if (!resources || await this._requiresEditConfirmation(resources, workingDirectories, sessionKey)
-			|| !this._isEditAutoApproved(resources, workingDirectories)) {
-			return false;
-		}
-		const current = await this._readTrackedFileIdentity(fullPath, tracked.toolCallId, tracked.storageResource);
-		if (!current || !matchesTrackedTemporaryFile(tracked, current)) {
-			return false;
-		}
 		try {
-			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
-			if (!reference) {
+			const operand = parseTemporaryFileRemoval(commandLine, shellLanguage);
+			const session = this._resolveSession(sessionKey);
+			if (!operand || !path.isAbsolute(operand) || !session || !workingDirectories?.length) {
+				return false;
+			}
+			const fullPath = path.normalize(operand);
+			const tracked = await this._trackedTemporaryFiles.get(session)?.get(temporaryFileKey(fullPath));
+			if (!tracked || !isTemporaryArtifact(fullPath)) {
+				return false;
+			}
+			const resource = URI.file(fullPath);
+			const resources = await this._resolveResourcesForApproval(resource);
+			if (!resources || await this._requiresEditConfirmation(resources, workingDirectories, sessionKey)
+				|| !this._isEditAutoApproved(resources, workingDirectories)) {
+				return false;
+			}
+			const current = await this._readTrackedFileIdentity(fullPath, tracked.toolCallId, tracked.storageResource);
+			if (!current || !matchesTrackedTemporaryFile(tracked, current)) {
 				return false;
 			}
 			try {
-				const content = await reference.object.readFileEditContent(tracked.toolCallId, tracked.path);
-				return !!content?.afterContent && content.afterContent.byteLength === current.size
-					&& (await readFile(fullPath)).equals(Buffer.from(content.afterContent));
-			} finally {
-				reference.dispose();
+				const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
+				if (!reference) {
+					return false;
+				}
+				try {
+					const content = await reference.object.readFileEditContent(tracked.toolCallId, tracked.path);
+					return !!content?.afterContent && content.afterContent.byteLength === current.size
+						&& (await readFile(fullPath)).equals(Buffer.from(content.afterContent));
+				} finally {
+					reference.dispose();
+				}
+			} catch {
+				return false;
 			}
 		} catch {
 			return false;
