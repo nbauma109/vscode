@@ -231,13 +231,16 @@ suite('SessionPermissionManager', () => {
 				`Remove-Item -Path "${filePath}" -Force -WhatIf`,
 				'Remove-Item -Path *.tmp -Force',
 				`Remove-Item -LiteralPath "${filePath}" -Force -ErrorAction SilentlyContinue`,
-				`Remove-Item -LiteralPath "${filePath}" -Force` + '\\n' + 'Write-Host other',
+				`Remove-Item "-Force" "${filePath}"`,
+				`Remove-Item '-Path' "${filePath}"`,
+				`Remove-Item -LiteralPath "${filePath}" -Force` + '\n' + 'Write-Host other',
 			];
 			for (const command of unsafeCommands) {
 				assert.strictEqual(await permissions.getAutoApproval(powershellEvent(command), sessionUri), undefined, command);
 			}
 			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -rf -- ./agent-temp-file.tmp', 'bash'), sessionUri), undefined);
 			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -f -- ./agent-temp-file.tmp other.tmp', 'bash'), sessionUri), undefined);
+			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm "-f" -- ./agent-temp-file.tmp', 'bash'), sessionUri), undefined);
 		});
 
 		test('requires confirmation for symlink substitutions and workspace-external files', async () => {
@@ -247,8 +250,19 @@ suite('SessionPermissionManager', () => {
 			await recordAgentCreatedTemporaryFile(externalFile);
 			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${externalFile}"`), sessionUri), undefined);
 			rmSync(filePath);
-			symlinkSync(externalFile, filePath);
+			if (isWindows) {
+				writeFileSync(filePath, 'substituted file contents');
+			} else {
+				symlinkSync(externalFile, filePath);
+			}
 			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+
+		test('does not bypass explicit denied shell permissions', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			setPermissionRules([], ['Shell(Remove-Item *)']);
+			assert.strictEqual(await permissions.isDeniedByPermissions(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), true);
 		});
 
 		test('preserves permission asks and disabled terminal auto-approval', async () => {
