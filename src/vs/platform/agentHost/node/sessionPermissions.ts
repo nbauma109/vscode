@@ -426,11 +426,18 @@ export class SessionPermissionManager extends Disposable {
 			try {
 				const record = (await reference.object.getFileEdits([toolCallId]))
 					.find(edit => temporaryFileKey(edit.filePath) === temporaryFileKey(filePath));
-				if (!record || (record.kind !== FileEditKind.Create && (record.kind !== FileEditKind.Edit || !await previous))) {
+				if (!record || (record.kind !== FileEditKind.Create && record.kind !== FileEditKind.Edit)) {
 					return undefined;
 				}
 				const content = await reference.object.readFileEditContent(record.toolCallId, record.filePath);
 				const identity = await this._readTrackedFileIdentity(filePath, toolCallId, storageResource);
+				if (record.kind === FileEditKind.Edit) {
+					const earlier = await previous;
+					if (!earlier || !identity || earlier.device !== identity.device
+						|| earlier.inode !== identity.inode || earlier.createdAt !== identity.createdAt) {
+						return undefined;
+					}
+				}
 				if (!identity || !content?.afterContent || content.afterContent.byteLength !== identity.size) {
 					return undefined;
 				}
