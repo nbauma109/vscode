@@ -67,6 +67,10 @@ export const COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS = [
 ].join('\n');
 const subagentToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_SUBAGENT_TOOL_INSTRUCTIONS;
 
+/** Guides cleanup of agent-created temporary artifacts without limiting their creation or bypassing approvals. */
+export const COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION = 'Use temporary probe scripts (including PowerShell `.ps1` files) and other disposable files whenever they help complete the task. Once they are no longer needed, clean up only artifacts created during the current task. Prefer a file-editing tool that supports deletion, or use a single-file removal command with an absolute literal path when necessary. Honor required approvals; never delete pre-existing or user-modified files without permission.';
+const temporaryFileCleanupToolInstructions: ToolInstructionLine = () => COPILOT_AGENT_HOST_TEMP_FILE_CLEANUP_TOOL_INSTRUCTION;
+
 /**
  * Front-end guidance for the integrated browser tools, ported from the Copilot
  * extension's `defaultAgentInstructions`/per-model prompts. Emitted only when the
@@ -87,7 +91,7 @@ const browserToolInstructions: ToolInstructionLine = ({ hasTool }) => {
 /**
  * The registered tool-instruction lines, in render order.
  */
-const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, browserToolInstructions];
+const TOOL_INSTRUCTION_LINES: readonly ToolInstructionLine[] = [largeOutputToolInstructions, subagentToolInstructions, temporaryFileCleanupToolInstructions, browserToolInstructions];
 
 /** Tool-search guidance mirrored from the Copilot extension prompt. */
 const toolSearchToolInstructions: ToolInstructionLine = ({ hasTool }) =>

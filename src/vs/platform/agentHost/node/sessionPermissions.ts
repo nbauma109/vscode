@@ -4,6 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { lstat as fsLstat, realpath as fsRealpath } from 'fs';
+import { readFile } from 'fs/promises';
 import { homedir } from 'os';
 import { promisify } from 'util';
 import { firstParallel } from '../../../base/common/async.js';
@@ -35,10 +36,13 @@ import { ConfirmationOptionKind, type ConfirmationOption } from '../common/state
 import { ActionType, type IToolCallReadyAction } from '../common/state/sessionActions.js';
 import {
 	getInlineToolInput,
+	getToolFileEdits,
 	isAhpChatChannel,
+	FileEditKind,
 	ResponsePartKind,
 	ToolCallConfirmationReason,
 	ToolCallStatus,
+	type ToolCallResult,
 	type URI as ProtocolURI,
 } from '../common/state/sessionState.js';
 import { getEffectiveWorkingDirectories, IAgentConfigurationService, type IAgentChatConfigurationTarget } from './agentConfigurationService.js';
@@ -67,6 +71,121 @@ export interface IToolApprovalEvent {
 
 function getPermissionResource(e: IToolApprovalEvent): URI | undefined {
 	return e.permissionResource ?? (e.permissionPath ? URI.file(e.permissionPath) : undefined);
+}
+
+interface ITrackedTemporaryFile {
+	readonly path: string;
+	readonly toolCallId: string;
+	readonly storageResource: string;
+	readonly device: number;
+	readonly inode: number;
+	readonly size: number;
+	readonly changedAt: number;
+	readonly modifiedAt: number;
+	readonly createdAt: number;
+}
+
+const MAX_TEMPORARY_FILE_BYTES = 8 * 1024 * 1024;
+const MAX_TRACKED_TEMPORARY_FILES = 128;
+
+function temporaryFileKey(filePath: string): string {
+	const normalized = path.normalize(filePath);
+	return isWindows ? normalized.toLowerCase() : normalized;
+}
+
+function isTemporaryArtifact(filePath: string): boolean {
+	return /(?:^|[._-])(?:tmp|temp|temporary|scratch|copilot)(?:[._-]|$)|\.(?:tmp|temp)$/i.test(path.basename(filePath));
+}
+
+interface ILiteralCleanupToken {
+	readonly value: string;
+	readonly quoted: boolean;
+}
+
+function tokenizeTemporaryCleanupCommand(commandLine: string): ILiteralCleanupToken[] | undefined {
+	if (/[\r\n\0]/.test(commandLine)) {
+		return undefined;
+	}
+	const tokens: ILiteralCleanupToken[] = [];
+	let remaining = commandLine.trim();
+	while (remaining.length > 0) {
+		const match = /^(?:'([A-Za-z0-9_.:\/\\ -]+)'|"([A-Za-z0-9_.:\/\\ -]+)"|([A-Za-z0-9_.:\/\\-]+))(?=\s|$)/.exec(remaining);
+		if (!match) {
+			return undefined;
+		}
+		tokens.push({ value: match[1] ?? match[2] ?? match[3], quoted: match[3] === undefined });
+		remaining = remaining.slice(match[0].length).trimStart();
+	}
+	return tokens.length >= 2 && tokens.length <= 5 ? tokens : undefined;
+}
+
+function powerShellCleanupOperand(tokens: readonly ILiteralCleanupToken[]): string | undefined {
+	let target: string | undefined;
+	let force = false;
+	let pathOption = false;
+	for (let index = 1; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (!token.quoted && /^-Force$/i.test(token.value) && !force) {
+			force = true;
+		} else if (!token.quoted && /^-(?:LiteralPath|Path)$/i.test(token.value) && !pathOption && !target && index + 1 < tokens.length) {
+			pathOption = true;
+			target = tokens[++index].value;
+		} else if (!target && !token.value.startsWith('-')) {
+			target = token.value;
+		} else {
+			return undefined;
+		}
+	}
+	return target && !target.startsWith('-') ? target : undefined;
+}
+
+function bashCleanupOperand(tokens: readonly ILiteralCleanupToken[]): string | undefined {
+	let target: string | undefined;
+	let force = false;
+	let endOfOptions = false;
+	for (let index = 1; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (!token.quoted && token.value === '-f' && !force && !endOfOptions) {
+			force = true;
+		} else if (!token.quoted && token.value === '--' && !endOfOptions && !target) {
+			endOfOptions = true;
+		} else if (!target && !token.value.startsWith('-')) {
+			target = token.value;
+		} else {
+			return undefined;
+		}
+	}
+	return target && !target.includes('\\') ? target : undefined;
+}
+
+/**
+ * Only standalone deletion commands with a literal file operand qualify.
+ * Shell expressions, wildcards, recursive deletion, and multiple operands remain subject to confirmation.
+ */
+function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolApprovalEvent['shellLanguage']): string | undefined {
+	const tokens = tokenizeTemporaryCleanupCommand(commandLine);
+	if (!tokens) {
+		return undefined;
+	}
+	if (tokens[0].quoted) {
+		return undefined;
+	}
+	if (shellLanguage === 'powershell' && tokens[0].value.toLowerCase() === 'remove-item') {
+		return powerShellCleanupOperand(tokens);
+	}
+	if (shellLanguage === 'bash' && tokens[0].value === 'rm') {
+		return bashCleanupOperand(tokens);
+	}
+	return undefined;
+}
+
+function matchesTrackedTemporaryFile(first: ITrackedTemporaryFile, second: ITrackedTemporaryFile): boolean {
+	return first.device === second.device
+		&& first.inode === second.inode
+		&& first.size === second.size
+		&& first.changedAt === second.changedAt
+		&& first.modifiedAt === second.modifiedAt
+		&& first.createdAt === second.createdAt;
 }
 
 /** Standard per-tool confirmation options presented to the user. */
@@ -216,6 +335,7 @@ export class SessionPermissionManager extends Disposable {
 	private readonly _commandAutoApprover: CommandAutoApprover;
 	private readonly _realpath: (fsPath: string) => Promise<string>;
 	private readonly _exists: (fsPath: string) => Promise<boolean>;
+	private readonly _trackedTemporaryFiles = new Map<string, Map<string, Promise<ITrackedTemporaryFile | undefined>>>();
 
 	constructor(
 		private readonly _stateManager: AgentHostStateManager,
@@ -229,6 +349,8 @@ export class SessionPermissionManager extends Disposable {
 		this._realpath = options?.realpath ?? realpath;
 		this._exists = options?.exists ?? Promises.exists;
 		this._commandAutoApprover = this._register(new CommandAutoApprover(this._logService));
+		this._register(this._stateManager.onDidDeleteSession(session => this._trackedTemporaryFiles.delete(session)));
+		this._register(this._stateManager.onDidRemoveSession(session => this._trackedTemporaryFiles.delete(session)));
 	}
 
 	/**
@@ -238,6 +360,164 @@ export class SessionPermissionManager extends Disposable {
 	 */
 	initialize(): Promise<void> {
 		return this._commandAutoApprover.initialize();
+	}
+
+
+	/**
+	 * Record completed file edits from the trusted host file-edit tracker.
+	 * Our cleanup exception remains unavailable when creation provenance cannot be confirmed.
+	 */
+	recordCompletedFileEdits(sessionKey: ProtocolURI, toolCallId: string, result: ToolCallResult): void {
+		if (!result.success) {
+			return;
+		}
+		const session = this._resolveSession(sessionKey);
+		if (!session) {
+			return;
+		}
+		const storageResource = isAhpChatChannel(sessionKey)
+			? this._stateManager.resolveChatStorageResource(URI.parse(session), URI.parse(sessionKey))
+			: session;
+		const edits = getToolFileEdits(result);
+		if (edits.length === 0) {
+			return;
+		}
+		let tracked = this._trackedTemporaryFiles.get(session);
+		if (!tracked) {
+			tracked = new Map();
+			this._trackedTemporaryFiles.set(session, tracked);
+		}
+		for (const edit of edits) {
+			try {
+				const before = edit.before && URI.parse(edit.before.uri);
+				const after = edit.after && URI.parse(edit.after.uri);
+				if (before?.scheme === Schemas.file && (!after || temporaryFileKey(before.fsPath) !== temporaryFileKey(after.fsPath))) {
+					tracked.delete(temporaryFileKey(before.fsPath));
+				}
+				if (after?.scheme !== Schemas.file || !isTemporaryArtifact(after.fsPath)) {
+					continue;
+				}
+				const key = temporaryFileKey(after.fsPath);
+				const previous = tracked.get(key);
+				if (!previous && tracked.size >= MAX_TRACKED_TEMPORARY_FILES) {
+					const oldest = tracked.keys().next().value;
+					if (oldest) {
+						tracked.delete(oldest);
+					}
+				}
+				tracked.set(key, this._captureTrackedTemporaryFile(storageResource, toolCallId, after.fsPath, previous));
+			} catch (error) {
+				this._logService.trace('[SessionPermissionManager] Unable to track a temporary file edit', error);
+			}
+		}
+	}
+
+	private async _captureTrackedTemporaryFile(
+		storageResource: string,
+		toolCallId: string,
+		filePath: string,
+		previous: Promise<ITrackedTemporaryFile | undefined> | undefined,
+	): Promise<ITrackedTemporaryFile | undefined> {
+		try {
+			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(storageResource));
+			if (!reference) {
+				return undefined;
+			}
+			try {
+				const record = (await reference.object.getFileEdits([toolCallId]))
+					.find(edit => temporaryFileKey(edit.filePath) === temporaryFileKey(filePath));
+				if (!record || (record.kind !== FileEditKind.Create && record.kind !== FileEditKind.Edit)) {
+					return undefined;
+				}
+				const content = await reference.object.readFileEditContent(record.toolCallId, record.filePath);
+				const identity = await this._readTrackedFileIdentity(filePath, toolCallId, storageResource);
+				if (record.kind === FileEditKind.Edit) {
+					const earlier = await previous;
+					if (!earlier || !identity || earlier.device !== identity.device
+						|| earlier.inode !== identity.inode || earlier.createdAt !== identity.createdAt) {
+						return undefined;
+					}
+				}
+				if (!identity || !content?.afterContent || content.afterContent.byteLength !== identity.size) {
+					return undefined;
+				}
+				const current = await readFile(filePath);
+				return current.equals(Buffer.from(content.afterContent)) ? identity : undefined;
+			} finally {
+				reference.dispose();
+			}
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async _readTrackedFileIdentity(filePath: string, toolCallId: string, storageResource: string): Promise<ITrackedTemporaryFile | undefined> {
+		try {
+			const current = await lstat(filePath);
+			if (!current.isFile() || current.isSymbolicLink() || current.size > MAX_TEMPORARY_FILE_BYTES) {
+				return undefined;
+			}
+			const resolved = await this._realpath(filePath);
+			if (temporaryFileKey(resolved) !== temporaryFileKey(filePath)) {
+				return undefined;
+			}
+			return {
+				path: filePath,
+				toolCallId,
+				storageResource,
+				device: current.dev,
+				inode: current.ino,
+				size: current.size,
+				changedAt: current.ctimeMs,
+				modifiedAt: current.mtimeMs,
+				createdAt: current.birthtimeMs,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async _isVerifiedTemporaryFileRemoval(
+		commandLine: string,
+		shellLanguage: IToolApprovalEvent['shellLanguage'],
+		workingDirectories: readonly URI[] | undefined,
+		sessionKey: ProtocolURI,
+	): Promise<boolean> {
+		try {
+			const operand = parseTemporaryFileRemoval(commandLine, shellLanguage);
+			const session = this._resolveSession(sessionKey);
+			if (!operand || !path.isAbsolute(operand) || !session || !workingDirectories?.length) {
+				return false;
+			}
+			const fullPath = path.normalize(operand);
+			const tracked = await this._trackedTemporaryFiles.get(session)?.get(temporaryFileKey(fullPath));
+			if (!tracked || !isTemporaryArtifact(fullPath)) {
+				return false;
+			}
+			const resource = URI.file(fullPath);
+			const resources = await this._resolveResourcesForApproval(resource);
+			if (!resources || await this._requiresEditConfirmation(resources, workingDirectories, sessionKey)
+				|| !this._isEditAutoApproved(resources, workingDirectories)) {
+				return false;
+			}
+			const current = await this._readTrackedFileIdentity(fullPath, tracked.toolCallId, tracked.storageResource);
+			if (!current || !matchesTrackedTemporaryFile(tracked, current)) {
+				return false;
+			}
+			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
+			if (!reference) {
+				return false;
+			}
+			try {
+				const content = await reference.object.readFileEditContent(tracked.toolCallId, tracked.path);
+				return !!content?.afterContent && content.afterContent.byteLength === current.size
+					&& (await readFile(fullPath)).equals(Buffer.from(content.afterContent));
+			} finally {
+				reference.dispose();
+			}
+		} catch {
+			return false;
+		}
 	}
 
 	// ---- Auto-approval (analogous to getPreConfirmAction) -------------------
@@ -390,6 +670,10 @@ export class SessionPermissionManager extends Disposable {
 			if (result === 'approved') {
 				this._logService.trace('[SessionPermissionManager] Auto-approving shell command');
 				return permissions.allow.some(rule => matchesPermissionRule(rule, request, context)) ? ToolCallConfirmationReason.Setting : ToolCallConfirmationReason.NotNeeded;
+			}
+			if (await this._isVerifiedTemporaryFileRemoval(e.toolInput, e.shellLanguage, workingDirectories, sessionKey)) {
+				this._logService.trace('[SessionPermissionManager] Auto-approving verified agent-owned temporary file cleanup');
+				return ToolCallConfirmationReason.NotNeeded;
 			}
 			if (result === 'denied') {
 				this._logService.trace('[SessionPermissionManager] Shell command denied by rule');

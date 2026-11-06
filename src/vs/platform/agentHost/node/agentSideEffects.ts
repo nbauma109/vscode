@@ -1124,6 +1124,7 @@ export class AgentSideEffects extends Disposable {
 				this._pendingSubagentSignals.deleteAndDispose(`${sessionKey}\0${action.toolCallId}`);
 			}
 			if (getToolFileEdits(action.result).length > 0) {
+				this._permissionManager.recordCompletedFileEdits(sessionKey, action.toolCallId, action.result);
 				const clientContext = this._turnTracker.getClientTelemetryContext(sessionKey, turnId);
 				this._changesets.onToolCallEditsApplied(sessionKey, turnId, clientContext);
 				if (sessionKey !== sessionUri) {
