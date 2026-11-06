@@ -99,11 +99,10 @@ function isTemporaryArtifact(filePath: string): boolean {
  * Only standalone deletion commands with a literal file operand qualify.
  * Shell expressions, wildcards, recursive deletion, and multiple operands remain subject to confirmation.
  */
-function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolApprovalEvent['shellLanguage']): string | undefined {
-	if ((shellLanguage !== 'bash' && shellLanguage !== 'powershell') || /[\r\n\0]/.test(commandLine)) {
+function tokenizeTemporaryCleanupCommand(commandLine: string): string[] | undefined {
+	if (/[\r\n\0]/.test(commandLine)) {
 		return undefined;
 	}
-
 	const tokens: string[] = [];
 	let remaining = commandLine.trim();
 	while (remaining.length > 0) {
@@ -114,32 +113,38 @@ function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolAppr
 		tokens.push(match[1] ?? match[2] ?? match[3]);
 		remaining = remaining.slice(match[0].length).trimStart();
 	}
+	return tokens.length >= 2 && tokens.length <= 5 ? tokens : undefined;
+}
 
-	if (tokens.length < 2 || tokens.length > 5) {
-		return undefined;
-	}
-	const isPowerShell = shellLanguage === 'powershell';
-	if (isPowerShell ? tokens[0].toLowerCase() !== 'remove-item' : tokens[0] !== 'rm') {
-		return undefined;
-	}
-
+function powerShellCleanupOperand(tokens: readonly string[]): string | undefined {
 	let target: string | undefined;
 	let force = false;
-	let literalPath = false;
+	let pathOption = false;
+	for (let index = 1; index < tokens.length; index++) {
+		const token = tokens[index];
+		if (/^-Force$/i.test(token) && !force) {
+			force = true;
+		} else if (/^-(?:LiteralPath|Path)$/i.test(token) && !pathOption && !target && index + 1 < tokens.length) {
+			pathOption = true;
+			target = tokens[++index];
+		} else if (!target && !token.startsWith('-')) {
+			target = token;
+		} else {
+			return undefined;
+		}
+	}
+	return target && !target.startsWith('-') ? target : undefined;
+}
+
+function bashCleanupOperand(tokens: readonly string[]): string | undefined {
+	let target: string | undefined;
+	let force = false;
 	let endOfOptions = false;
 	for (let index = 1; index < tokens.length; index++) {
 		const token = tokens[index];
-		if (isPowerShell && /^-(?:LiteralPath|Path)$/i.test(token) && !literalPath && !target) {
-			literalPath = true;
-			if (index + 1 >= tokens.length || tokens[index + 1].startsWith('-')) {
-				return undefined;
-			}
-			target = tokens[++index];
-		} else if (isPowerShell && /^-Force$/i.test(token) && !force) {
+		if (token === '-f' && !force && !endOfOptions) {
 			force = true;
-		} else if (!isPowerShell && token === '-f' && !force && !endOfOptions) {
-			force = true;
-		} else if (!isPowerShell && token === '--' && !endOfOptions && !target) {
+		} else if (token === '--' && !endOfOptions && !target) {
 			endOfOptions = true;
 		} else if (!target && !token.startsWith('-')) {
 			target = token;
@@ -147,8 +152,25 @@ function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolAppr
 			return undefined;
 		}
 	}
+	return target && !target.includes('\\') ? target : undefined;
+}
 
-	return target && (isPowerShell || !target.includes('\\')) ? target : undefined;
+/**
+ * Only standalone deletion commands with a literal file operand qualify.
+ * Shell expressions, wildcards, recursive deletion, and multiple operands remain subject to confirmation.
+ */
+function parseTemporaryFileRemoval(commandLine: string, shellLanguage: IToolApprovalEvent['shellLanguage']): string | undefined {
+	const tokens = tokenizeTemporaryCleanupCommand(commandLine);
+	if (!tokens) {
+		return undefined;
+	}
+	if (shellLanguage === 'powershell' && tokens[0].toLowerCase() === 'remove-item') {
+		return powerShellCleanupOperand(tokens);
+	}
+	if (shellLanguage === 'bash' && tokens[0] === 'rm') {
+		return bashCleanupOperand(tokens);
+	}
+	return undefined;
 }
 
 function matchesTrackedTemporaryFile(first: ITrackedTemporaryFile, second: ITrackedTemporaryFile): boolean {
