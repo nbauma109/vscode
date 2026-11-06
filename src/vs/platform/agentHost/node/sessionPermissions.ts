@@ -490,20 +490,16 @@ export class SessionPermissionManager extends Disposable {
 			if (!current || !matchesTrackedTemporaryFile(tracked, current)) {
 				return false;
 			}
-			try {
-				const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
-				if (!reference) {
-					return false;
-				}
-				try {
-					const content = await reference.object.readFileEditContent(tracked.toolCallId, tracked.path);
-					return !!content?.afterContent && content.afterContent.byteLength === current.size
-						&& (await readFile(fullPath)).equals(Buffer.from(content.afterContent));
-				} finally {
-					reference.dispose();
-				}
-			} catch {
+			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
+			if (!reference) {
 				return false;
+			}
+			try {
+				const content = await reference.object.readFileEditContent(tracked.toolCallId, tracked.path);
+				return !!content?.afterContent && content.afterContent.byteLength === current.size
+					&& (await readFile(fullPath)).equals(Buffer.from(content.afterContent));
+			} finally {
+				reference.dispose();
 			}
 		} catch {
 			return false;
