@@ -20,7 +20,7 @@ import { ISessionDataService, SESSION_ATTACHMENTS_DIRNAME } from '../../common/s
 import { DEFAULT_EDIT_AUTO_APPROVE_PATTERNS, getChatSensitiveEditLocations, mergeChatEditAutoApprovePatterns } from '../../../chat/common/chatSettings.js';
 import { AgentPermissionKind, type IAgentToolPendingConfirmationSignal } from '../../common/agent.js';
 import { SessionConfigKey } from '../../common/sessionConfigKeys.js';
-import { buildChatUri, buildDefaultChatUri, ChatOriginKind, MessageAttachmentKind, MessageKind, SessionStatus, ToolCallConfirmationReason, ToolCallStatus, type SessionSummary } from '../../common/state/sessionState.js';
+import { buildChatUri, buildDefaultChatUri, ChatOriginKind, FileEditKind, MessageAttachmentKind, MessageKind, SessionStatus, ToolCallConfirmationReason, ToolCallStatus, ToolResultContentType, type SessionSummary } from '../../common/state/sessionState.js';
 import { ConfirmationOptionKind, type ConfirmationOption } from '../../common/state/protocol/state.js';
 import { ActionType } from '../../common/state/sessionActions.js';
 import { chatToolCallStart, chatTurnStarted } from '../common/chatActionBuilders.js';
@@ -74,6 +74,40 @@ suite('SessionPermissionManager', () => {
 
 	function powershellEvent(commandLine: string): IToolApprovalEvent {
 		return shellEvent(commandLine, 'powershell');
+	}
+
+
+	let temporaryFileEditNumber = 0;
+
+	async function recordAgentCreatedTemporaryFile(filePath: string, contents = 'agent-created temporary contents'): Promise<void> {
+		writeFileSync(filePath, contents);
+		const toolCallId = `owned-temp-${++temporaryFileEditNumber}`;
+		const turnId = `owned-temp-turn-${temporaryFileEditNumber}`;
+		const reference = sessionDataService.openDatabase(URI.parse(sessionUri));
+		try {
+			await reference.object.createTurn(turnId);
+			await reference.object.storeFileEdit({
+				turnId,
+				toolCallId,
+				filePath,
+				kind: FileEditKind.Create,
+				addedLines: undefined,
+				removedLines: undefined,
+				afterContent: new TextEncoder().encode(contents),
+			});
+		} finally {
+			reference.dispose();
+		}
+		const fileUri = URI.file(filePath).toString();
+		permissions.recordCompletedFileEdits(sessionUri, toolCallId, {
+			success: true,
+			pastTenseMessage: 'Created temporary file',
+			content: [{
+				type: ToolResultContentType.FileEdit,
+				before: { uri: fileUri, content: { uri: fileUri } },
+				after: { uri: fileUri, content: { uri: fileUri } },
+			}],
+		});
 	}
 
 	function setPermissionRules(allow: readonly string[], deny: readonly string[] = [], ask: readonly string[] = []): void {
@@ -150,6 +184,83 @@ suite('SessionPermissionManager', () => {
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();
+
+
+	suite('agent-owned temporary file cleanup', () => {
+		test('approves exact PowerShell deletion of a verified agent-created temporary file', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			assert.strictEqual(
+				await permissions.getAutoApproval(powershellEvent(`Remove-Item -LiteralPath "${filePath}" -Force`), sessionUri),
+				ToolCallConfirmationReason.NotNeeded,
+			);
+		});
+
+		test('approves exact Bash deletion of a verified agent-created temporary file', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			assert.strictEqual(
+				await permissions.getAutoApproval(shellEvent('rm -f -- ./agent-temp-file.tmp', 'bash'), sessionUri),
+				ToolCallConfirmationReason.NotNeeded,
+			);
+		});
+
+		test('requires confirmation for pre-existing files and files without a temporary name', async () => {
+			const preExisting = join(workDir, 'pre-existing.tmp');
+			const namedSource = join(workDir, 'important-source.ts');
+			writeFileSync(preExisting, 'user content');
+			await recordAgentCreatedTemporaryFile(namedSource);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item -LiteralPath "${preExisting}"`), sessionUri), undefined);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item -LiteralPath "${namedSource}"`), sessionUri), undefined);
+		});
+
+		test('requires confirmation when an agent-owned file has subsequently changed', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), ToolCallConfirmationReason.NotNeeded);
+			writeFileSync(filePath, 'modified by user');
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+
+		test('requires confirmation for shell injection, recursion, wildcards, and multiple deletion operands', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			const unsafeCommands = [
+				`Remove-Item -LiteralPath "${filePath}" -Recurse -Force`,
+				`Remove-Item -LiteralPath "${filePath}"; Write-Host other`,
+				`Remove-Item -Path "${filePath}" -Force -WhatIf`,
+				'Remove-Item -Path *.tmp -Force',
+				`Remove-Item -LiteralPath "${filePath}" -Force -ErrorAction SilentlyContinue`,
+				`Remove-Item -LiteralPath "${filePath}" -Force` + '\\n' + 'Write-Host other',
+			];
+			for (const command of unsafeCommands) {
+				assert.strictEqual(await permissions.getAutoApproval(powershellEvent(command), sessionUri), undefined, command);
+			}
+			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -rf -- ./agent-temp-file.tmp', 'bash'), sessionUri), undefined);
+			assert.strictEqual(await permissions.getAutoApproval(shellEvent('rm -f -- ./agent-temp-file.tmp other.tmp', 'bash'), sessionUri), undefined);
+		});
+
+		test('requires confirmation for symlink substitutions and workspace-external files', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			const externalFile = join(outsideDir, 'external-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			await recordAgentCreatedTemporaryFile(externalFile);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${externalFile}"`), sessionUri), undefined);
+			rmSync(filePath);
+			symlinkSync(externalFile, filePath);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+
+		test('preserves permission asks and disabled terminal auto-approval', async () => {
+			const filePath = join(workDir, 'agent-temp-file.tmp');
+			await recordAgentCreatedTemporaryFile(filePath);
+			setPermissionRules([], [], ['Shell(Remove-Item *)']);
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+			setPermissionRules([]);
+			configService.updateRootConfig({ [AgentHostTerminalAutoApproveEnabledConfigKey]: false });
+			assert.strictEqual(await permissions.getAutoApproval(powershellEvent(`Remove-Item "${filePath}"`), sessionUri), undefined);
+		});
+	});
 
 	test('legacy bare tool names still approve concrete tools', async () => {
 		setPermissionRules(['bash']);
