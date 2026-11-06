@@ -76,6 +76,7 @@ function getPermissionResource(e: IToolApprovalEvent): URI | undefined {
 interface ITrackedTemporaryFile {
 	readonly path: string;
 	readonly toolCallId: string;
+	readonly storageResource: string;
 	readonly device: number;
 	readonly inode: number;
 	readonly size: number;
@@ -373,6 +374,9 @@ export class SessionPermissionManager extends Disposable {
 		if (!session) {
 			return;
 		}
+		const storageResource = isAhpChatChannel(sessionKey)
+			? this._stateManager.resolveChatStorageResource(URI.parse(session), URI.parse(sessionKey))
+			: session;
 		const edits = getToolFileEdits(result);
 		if (edits.length === 0) {
 			return;
@@ -394,7 +398,7 @@ export class SessionPermissionManager extends Disposable {
 				}
 				const key = temporaryFileKey(after.fsPath);
 				const previous = tracked.get(key);
-				tracked.set(key, this._captureTrackedTemporaryFile(session, toolCallId, after.fsPath, previous));
+				tracked.set(key, this._captureTrackedTemporaryFile(storageResource, toolCallId, after.fsPath, previous));
 			} catch (error) {
 				this._logService.trace('[SessionPermissionManager] Unable to track a temporary file edit', error);
 			}
@@ -402,13 +406,13 @@ export class SessionPermissionManager extends Disposable {
 	}
 
 	private async _captureTrackedTemporaryFile(
-		session: string,
+		storageResource: string,
 		toolCallId: string,
 		filePath: string,
 		previous: Promise<ITrackedTemporaryFile | undefined> | undefined,
 	): Promise<ITrackedTemporaryFile | undefined> {
 		try {
-			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(session));
+			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(storageResource));
 			if (!reference) {
 				return undefined;
 			}
@@ -419,7 +423,7 @@ export class SessionPermissionManager extends Disposable {
 					return undefined;
 				}
 				const content = await reference.object.readFileEditContent(record.toolCallId, record.filePath);
-				const identity = await this._readTrackedFileIdentity(filePath, toolCallId);
+				const identity = await this._readTrackedFileIdentity(filePath, toolCallId, storageResource);
 				if (!identity || !content?.afterContent || content.afterContent.byteLength !== identity.size) {
 					return undefined;
 				}
@@ -433,7 +437,7 @@ export class SessionPermissionManager extends Disposable {
 		}
 	}
 
-	private async _readTrackedFileIdentity(filePath: string, toolCallId: string): Promise<ITrackedTemporaryFile | undefined> {
+	private async _readTrackedFileIdentity(filePath: string, toolCallId: string, storageResource: string): Promise<ITrackedTemporaryFile | undefined> {
 		try {
 			const current = await lstat(filePath);
 			if (!current.isFile() || current.isSymbolicLink() || current.size > MAX_TEMPORARY_FILE_BYTES) {
@@ -446,6 +450,7 @@ export class SessionPermissionManager extends Disposable {
 			return {
 				path: filePath,
 				toolCallId,
+				storageResource,
 				device: current.dev,
 				inode: current.ino,
 				size: current.size,
@@ -480,12 +485,12 @@ export class SessionPermissionManager extends Disposable {
 			|| !this._isEditAutoApproved(resources, workingDirectories)) {
 			return false;
 		}
-		const current = await this._readTrackedFileIdentity(fullPath, tracked.toolCallId);
+		const current = await this._readTrackedFileIdentity(fullPath, tracked.toolCallId, tracked.storageResource);
 		if (!current || !matchesTrackedTemporaryFile(tracked, current)) {
 			return false;
 		}
 		try {
-			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(session));
+			const reference = await this._sessionDataService.tryOpenDatabase(URI.parse(tracked.storageResource));
 			if (!reference) {
 				return false;
 			}
